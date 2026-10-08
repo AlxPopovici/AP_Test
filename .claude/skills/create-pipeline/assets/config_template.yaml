@@ -1,0 +1,21 @@
+# Config for the <PIPELINE_ID> pipeline.
+# Only needed if this pipeline requires its own Snowflake identity or an override that
+# isn't already inherited from the area/sub-area config.yaml — check those first
+# (see SKILL.md Step 2.6). Delete keys/sections you don't need; don't duplicate a value
+# that's already set higher up the folder hierarchy.
+
+ALL:
+  # Full managed identifier: managed__snowflake_<team>__<user>. Only set this here if
+  # the sub-area's config.yaml doesn't already set one for this team.
+  default_sf_user: managed__snowflake_<TEAM>__<USER>
+
+# Per-environment overrides, only if a value genuinely differs by env (e.g. a warehouse
+# sized differently in STAGE vs PROD). Omit any section/key that doesn't need overriding.
+# DEV:
+#   some_key: some_dev_value
+# STAGE:
+#   some_key: some_stage_value
+# PREPROD:
+#   some_key: some_preprod_value
+# PROD:
+#   some_key: some_prod_value

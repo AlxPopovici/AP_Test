@@ -1,0 +1,14 @@
+{
+  "extraKnownMarketplaces": {
+    "superbet-ai-batteries": {
+      "source": {
+        "source": "github",
+        "repo": "superbet-group/ai.core.batteries"
+      },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "airflow-mcp-toolbox@superbet-ai-batteries": true
+  }
+}
