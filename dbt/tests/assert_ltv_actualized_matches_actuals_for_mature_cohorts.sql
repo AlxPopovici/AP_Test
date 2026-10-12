@@ -1,0 +1,11 @@
+-- For FTD cohorts 12+ calendar months old, LTV_ACTUALIZED must equal Actual_Y1
+-- (NGR_Y1 for BR domains 1 and 14, NGP_Y1 for all others). Returns offending players.
+SELECT
+    PLAYER_ID,
+    BUSINESS_DOMAIN_ID,
+    LTV_ACTUALIZED,
+    CASE WHEN BUSINESS_DOMAIN_ID IN (1, 14) THEN COALESCE(NGR_Y1, 0) ELSE COALESCE(NGP_Y1, 0) END AS EXPECTED_ACTUAL_Y1
+FROM {{ ref('int_player_attribution_base') }}
+WHERE FIRST_TIME_DEPOSIT_DT_LOCAL IS NOT NULL
+  AND DATEDIFF('month', FIRST_TIME_DEPOSIT_DT_LOCAL, CURRENT_DATE()) >= 12
+  AND ABS(LTV_ACTUALIZED - EXPECTED_ACTUAL_Y1) > 0.0001

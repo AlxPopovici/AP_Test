@@ -1,0 +1,43 @@
+version: 2
+
+sources:
+  - name: dm_martech
+    database: PROD
+    schema: DM_MARTECH
+    tables:
+      - name: vw_f_player_reg_attribution
+        description: >
+          Player-level attribution (Attribution V2 pipeline, layer 6 reporting view). Same contract as the
+          legacy vw_player_reg_attribution, which FR__DI cannot see. One row per player_id.
+
+  - name: dwh
+    database: PROD
+    schema: DWH
+    tables:
+      - name: d_business_market
+        description: Market dimension, used for the UTC to local timezone conversion.
+      - name: f_exchange_rate
+        description: Daily FX rates, used for EUR conversion.
+
+  - name: ds
+    database: PROD
+    schema: DS
+    tables:
+      - name: ltv_acquisition
+        description: LTV model predictions per player (all domains except PL).
+
+  - name: bi
+    database: PROD
+    schema: BI
+    tables:
+      - name: vw_manual_pl_ltv
+        description: Manual LTV source for Poland (LTV_ACQUISITION is missing recent PL data).
+      - name: ltv_expected_share
+        description: Cumulative share of LTV expected by weeks since FTD, per domain.
+
+  - name: dm_player
+    database: PROD
+    schema: DM_PLAYER
+    tables:
+      - name: f_player_product_performance_daily
+        description: Daily NGP/NGR per player in local currency.

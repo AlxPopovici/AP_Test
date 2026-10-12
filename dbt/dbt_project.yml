@@ -1,0 +1,22 @@
+name: 'attribution_v2'
+version: '0.1.0'
+config-version: 2
+
+profile: 'attribution_v2'
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+# Everything lands in PROD.SBX_BI (see macros/generate_schema_name.sql).
+# Models are prefixed DBT_ so they never collide with the existing TMP_VW_* views.
+models:
+  attribution_v2:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    marts:
+      +materialized: table
