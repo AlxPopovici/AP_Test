@@ -1,0 +1,36 @@
+name: 'affiliate_activity'
+version: '0.1.0'
+config-version: 2
+
+profile: 'affiliate_activity'
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+analysis-paths: ["analyses"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+# Domains the original query covers (both Brazilian domains kept for continuity).
+# Override on the command line to restrict a dev run, e.g.:
+#   dbt build --vars '{dev_domain_ids: [16]}'
+vars:
+  dev_domain_ids: [1, 2, 3, 8, 10, 14, 15, 16]
+  run_reconcile: false
+
+# Everything lands in PROD.SBX_BI (see macros/generate_schema_name.sql).
+models:
+  affiliate_activity:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+      # These three are read more than once or are heavy, so they are stored as tables.
+      int_player_base:
+        +materialized: table
+      int_player_states_weekly:
+        +materialized: table
+      int_player_states_monthly:
+        +materialized: table
+    marts:
+      +materialized: table

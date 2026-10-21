@@ -1,0 +1,248 @@
+{#
+    The original, hand-written SQL (pre-dbt), kept as one copy so that
+      - analyses/original_query.sql can render it for running in a Snowflake worksheet
+      - tests/assert_matches_original_query.sql can reconcile the dbt output against it
+    Changes vs the pasted version: trailing semicolon removed,
+    DM_MARTECH.D_REGISTRATION_REPORTING_DAILY in CTE_PLAYERS qualified as PROD.DM_MARTECH.* (was unqualified),
+    and the monthly block's `per.BUSINESS_DOMAIN_ID = 16` filter removed (confirmed as a mistake, weekly has none).
+#}
+{% macro original_affiliate_activity_query() %}
+WITH
+    CTE_UNIFIED_DATES AS (
+        SELECT DISTINCT
+            dp.PLAYER_UNIFIED_CODE,
+            dp.PLAYER_ID,
+            dp.business_domain_id,
+            dbd.BUSINESS_DOMAIN_NAME,
+            dp.REGISTRATION_DT REG_DT,
+            dp.FIRST_TIME_DEPOSIT_DT FTD_DT,
+            dp.REGISTRATION_CHANNEL_CODE,
+            MIN(dp.REGISTRATION_DT) OVER(PARTITION BY dp.PLAYER_UNIFIED_CODE) REGISTRATION_DT,
+            MIN(dp.FIRST_TIME_DEPOSIT_DT) OVER(PARTITION BY dp.PLAYER_UNIFIED_CODE) FIRST_TIME_DEPOSIT_DT,
+            dbm.COUNTRY_TIMEZONE
+        FROM
+            PROD.DWH.D_PLAYER dp
+        JOIN
+            PROD.DWH.D_BUSINESS_MARKET dbm
+                ON dp.BUSINESS_MARKET_ID = dbm.BUSINESS_MARKET_ID
+        JOIN
+            PROD.DWH.D_BUSINESS_DOMAIN dbd
+                ON dp.BUSINESS_DOMAIN_ID = dbd.BUSINESS_DOMAIN_ID
+        WHERE
+            dp.business_domain_id IN ({{ var('dev_domain_ids') | join(', ') }}) -- HAVING BOTH BRAZILIAN DOMAINS FOR CONTINUITY
+            AND dp.BUSINESS_LINE_ID = 1 -- ONLINE
+            AND dp.is_valid = 1
+            AND dp.IS_TEST_ACCOUNT != 1
+    )
+    ,CTE_PLAYERS AS (
+        SELECT
+            dp.PLAYER_UNIFIED_CODE,
+            COALESCE(MIN(CASE WHEN dp.REG_DT = dp.REGISTRATION_DT THEN reg.player_id ELSE NULL END),
+            MIN(CASE WHEN dp.REG_DT = dp.REGISTRATION_DT THEN dp.player_id ELSE NULL END)) PLAYER_ID,
+            MIN(dp.business_domain_id) business_domain_id,
+            MIN(dp.BUSINESS_DOMAIN_NAME) BUSINESS_DOMAIN_NAME,
+            MIN(CONVERT_TIMEZONE('UTC', dp.COUNTRY_TIMEZONE, dp.REGISTRATION_DT)) REGISTRATION_DT_LOCAL,
+            MIN(CONVERT_TIMEZONE('UTC', dp.COUNTRY_TIMEZONE, dp.FIRST_TIME_DEPOSIT_DT)) FIRST_TIME_DEPOSIT_DT_LOCAL
+        FROM
+            CTE_UNIFIED_DATES dp
+        --- PRE-VAN-HECKE ATTRIBUTED REGISTRATIONS:
+        LEFT JOIN
+            PROD.DM_MARTECH.D_REGISTRATION_REPORTING_DAILY reg
+                ON  dp.player_id = reg.player_id
+                AND reg.business_domain_id = 8
+                AND reg.REGISTRATION_DT  < '2024-09-02'::date -- VH GO-live
+                AND reg.ACQUISITION_GROUP <> 'Organic'
+    GROUP BY 1
+    )
+    ,CTE_PLAYER_BASE AS (
+        SELECT
+            dp.PLAYER_UNIFIED_CODE,
+            dp.PLAYER_ID,
+            dp.BUSINESS_DOMAIN_ID,
+            dp.REGISTRATION_DT_LOCAL,
+            dp.FIRST_TIME_DEPOSIT_DT_LOCAL,
+            reg.COUPON_NAME AS COUPON_NAME,
+            COALESCE(dcr.MARKETING_CHANNEL_MAPPED, reg.MARKETING_CHANNEL_MAPPED) AS MKT_CHANNEL,
+            COALESCE(dcr.MARKETING_SOURCE_MAPPED, reg.MARKETING_SOURCE_MAPPED) AS MKT_SOURCE
+        FROM
+            CTE_PLAYERS dp
+        LEFT JOIN
+            PROD.DM_MARTECH.D_REGISTRATION_REPORTING_DAILY reg
+                ON   dp.PLAYER_ID = reg.player_id
+        --------------- TO MAP COUPON CODES IN LINE WITH PL MKT TEAM PREFERENCES:
+        LEFT JOIN
+            PROD.BI.D_COUPON_REPORTING dcr
+                ON  reg.BUSINESS_DOMAIN_ID = dcr.BUSINESS_DOMAIN_ID
+                AND LOWER(reg.MARKETING_SOURCE_NAME) = LOWER(dcr.MARKETING_SOURCE_NAME)
+                AND LOWER(reg.COUPON_NAME) = LOWER(dcr.COUPON_NAME)
+                AND reg.ATTRIBUTION_SOURCE LIKE '%Betler%'
+        WHERE
+            COALESCE(NULLIF(COALESCE(dcr.ACQUISITION_CHANNEL, reg.ACQUISITION_CHANNEL), 'UNK'), 'Organic - Superbet') = 'Affiliate'
+            AND (DATE(dp.REGISTRATION_DT_LOCAL) >= DATE_TRUNC('MONTH', CURRENT_DATE()) - INTERVAL '25 MONTHS'
+            OR DATE(dp.FIRST_TIME_DEPOSIT_DT_LOCAL) >= DATE_TRUNC('MONTH', CURRENT_DATE()) - INTERVAL '25 MONTHS')
+            AND DATE(dp.REGISTRATION_DT_LOCAL) < CURRENT_DATE()
+    )
+-- == WEEKLY PIPELINE ==
+    ,CTE_ACTIVE_PERIODS_W AS (
+        SELECT
+            base.BUSINESS_DOMAIN_ID,
+            base.MKT_CHANNEL,
+            base.MKT_SOURCE,
+            base.COUPON_NAME,
+            base.PLAYER_UNIFIED_CODE,
+            DATE_TRUNC('WEEK', per.REPORTING_DATE) AS PERIOD
+        FROM
+            PROD.DM_PLAYER.F_PLAYER_PRODUCT_PERFORMANCE_DAILY per
+        INNER JOIN
+            CTE_PLAYER_BASE base
+                ON per.PLAYER_UNIFIED_CODE = base.PLAYER_UNIFIED_CODE
+        WHERE
+            per.BET_TOTAL > 0
+            AND per.REPORTING_DATE >= DATE_TRUNC('MONTH', CURRENT_DATE()) - INTERVAL '25 MONTHS'
+        GROUP BY ALL
+    )
+    ,CTE_PLAYER_FIRST_PERIOD_W AS (
+        SELECT
+            PLAYER_UNIFIED_CODE,
+            MIN(PERIOD) AS FIRST_ACTIVE_PERIOD
+        FROM
+            CTE_ACTIVE_PERIODS_W
+        GROUP BY
+            PLAYER_UNIFIED_CODE
+    )
+    ,CTE_ACTIVE_STATES_W AS (
+        SELECT
+            curr.BUSINESS_DOMAIN_ID,
+            curr.MKT_CHANNEL,
+            curr.MKT_SOURCE,
+            curr.COUPON_NAME,
+            curr.PLAYER_UNIFIED_CODE,
+            curr.PERIOD,
+            1 AS IS_ACTIVE,
+            CASE WHEN prev.PLAYER_UNIFIED_CODE IS NOT NULL THEN 1 ELSE 0 END AS IS_RETAINED,
+            CASE WHEN curr.PERIOD = fp.FIRST_ACTIVE_PERIOD THEN 1 ELSE 0 END AS IS_NEW,
+            CASE
+                WHEN prev.PLAYER_UNIFIED_CODE IS NULL
+                AND curr.PERIOD != fp.FIRST_ACTIVE_PERIOD
+                THEN 1 ELSE 0
+            END AS IS_REACTIVATED,
+            0 AS IS_INACTIVE
+        FROM
+            CTE_ACTIVE_PERIODS_W curr
+        LEFT JOIN
+            CTE_ACTIVE_PERIODS_W prev
+                ON prev.PLAYER_UNIFIED_CODE = curr.PLAYER_UNIFIED_CODE
+                AND prev.PERIOD = DATEADD('WEEK', -1, curr.PERIOD)
+        INNER JOIN
+            CTE_PLAYER_FIRST_PERIOD_W fp
+                ON fp.PLAYER_UNIFIED_CODE = curr.PLAYER_UNIFIED_CODE
+    )
+    ,CTE_INACTIVE_STATES_W AS (
+        SELECT
+            prev.BUSINESS_DOMAIN_ID,
+            prev.MKT_CHANNEL,
+            prev.MKT_SOURCE,
+            prev.COUPON_NAME,
+            prev.PLAYER_UNIFIED_CODE,
+            DATEADD('WEEK', 1, prev.PERIOD) AS PERIOD,
+            0 AS IS_ACTIVE,
+            0 AS IS_RETAINED,
+            0 AS IS_NEW,
+            0 AS IS_REACTIVATED,
+            1 AS IS_INACTIVE
+        FROM
+            CTE_ACTIVE_PERIODS_W prev
+        LEFT JOIN CTE_ACTIVE_PERIODS_W curr
+            ON curr.PLAYER_UNIFIED_CODE = prev.PLAYER_UNIFIED_CODE
+            AND curr.PERIOD = DATEADD('WEEK', 1, prev.PERIOD)
+        WHERE
+            curr.PLAYER_UNIFIED_CODE IS NULL
+            AND DATEADD('WEEK', 1, prev.PERIOD) < DATE_TRUNC('WEEK', CURRENT_DATE())
+    ),
+    -- == MONTHLY PIPELINE ==
+    CTE_ACTIVE_PERIODS_M AS (
+        SELECT
+            base.BUSINESS_DOMAIN_ID,
+            base.MKT_CHANNEL,
+            base.MKT_SOURCE,
+            base.COUPON_NAME,
+            base.PLAYER_UNIFIED_CODE,
+            DATE_TRUNC('MONTH', per.REPORTING_DATE) AS PERIOD
+        FROM PROD.DM_PLAYER.F_PLAYER_PRODUCT_PERFORMANCE_DAILY per
+        INNER JOIN CTE_PLAYER_BASE base
+            ON per.PLAYER_UNIFIED_CODE = base.PLAYER_UNIFIED_CODE
+        WHERE
+            per.BET_TOTAL > 0
+            AND per.REPORTING_DATE >= DATE_TRUNC('MONTH', CURRENT_DATE()) - INTERVAL '25 MONTHS'
+        GROUP BY ALL
+    ),
+    CTE_PLAYER_FIRST_PERIOD_M AS (
+        SELECT
+            PLAYER_UNIFIED_CODE,
+            MIN(PERIOD) AS FIRST_ACTIVE_PERIOD
+        FROM CTE_ACTIVE_PERIODS_M
+        GROUP BY PLAYER_UNIFIED_CODE
+    ),
+    CTE_ACTIVE_STATES_M AS (
+        SELECT
+            curr.BUSINESS_DOMAIN_ID,
+            curr.MKT_CHANNEL,
+            curr.MKT_SOURCE,
+            curr.COUPON_NAME,
+            curr.PLAYER_UNIFIED_CODE,
+            curr.PERIOD,
+            1 AS IS_ACTIVE,
+            CASE WHEN prev.PLAYER_UNIFIED_CODE IS NOT NULL THEN 1 ELSE 0 END AS IS_RETAINED,
+            CASE WHEN curr.PERIOD = fp.FIRST_ACTIVE_PERIOD THEN 1 ELSE 0 END AS IS_NEW,
+            CASE
+                WHEN prev.PLAYER_UNIFIED_CODE IS NULL
+                AND curr.PERIOD != fp.FIRST_ACTIVE_PERIOD
+                THEN 1 ELSE 0
+            END AS IS_REACTIVATED,
+            0 AS IS_INACTIVE
+        FROM CTE_ACTIVE_PERIODS_M curr
+        LEFT JOIN CTE_ACTIVE_PERIODS_M prev
+            ON prev.PLAYER_UNIFIED_CODE = curr.PLAYER_UNIFIED_CODE
+            AND prev.PERIOD = DATEADD('MONTH', -1, curr.PERIOD)
+        INNER JOIN CTE_PLAYER_FIRST_PERIOD_M fp
+            ON fp.PLAYER_UNIFIED_CODE = curr.PLAYER_UNIFIED_CODE
+    ),
+    CTE_INACTIVE_STATES_M AS (
+        SELECT
+            prev.BUSINESS_DOMAIN_ID,
+            prev.MKT_CHANNEL,
+            prev.MKT_SOURCE,
+            prev.COUPON_NAME,
+            prev.PLAYER_UNIFIED_CODE,
+            DATEADD('MONTH', 1, prev.PERIOD) AS PERIOD,
+            0 AS IS_ACTIVE,
+            0 AS IS_RETAINED,
+            0 AS IS_NEW,
+            0 AS IS_REACTIVATED,
+            1 AS IS_INACTIVE
+        FROM CTE_ACTIVE_PERIODS_M prev
+        LEFT JOIN CTE_ACTIVE_PERIODS_M curr
+            ON curr.PLAYER_UNIFIED_CODE = prev.PLAYER_UNIFIED_CODE
+            AND curr.PERIOD = DATEADD('MONTH', 1, prev.PERIOD)
+        WHERE
+            curr.PLAYER_UNIFIED_CODE IS NULL
+            AND DATEADD('MONTH', 1, prev.PERIOD) < DATE_TRUNC('MONTH', CURRENT_DATE())
+    )
+SELECT 'WEEKLY' AS GRANULARITY, BUSINESS_DOMAIN_ID, MKT_CHANNEL, MKT_SOURCE, COUPON_NAME, PERIOD,
+    COUNT(DISTINCT CASE WHEN IS_ACTIVE = 1 THEN PLAYER_UNIFIED_CODE END) AS ACTIVE_PLAYERS,
+    COUNT(DISTINCT CASE WHEN IS_NEW = 1 THEN PLAYER_UNIFIED_CODE END) AS NEW_PLAYERS,
+    COUNT(DISTINCT CASE WHEN IS_RETAINED = 1 THEN PLAYER_UNIFIED_CODE END) AS RETAINED_PLAYERS,
+    COUNT(DISTINCT CASE WHEN IS_REACTIVATED = 1 THEN PLAYER_UNIFIED_CODE END) AS REACTIVATED_PLAYERS,
+    COUNT(DISTINCT CASE WHEN IS_INACTIVE = 1 THEN PLAYER_UNIFIED_CODE END) AS INACTIVE_PLAYERS
+FROM (SELECT * FROM CTE_ACTIVE_STATES_W UNION ALL SELECT * FROM CTE_INACTIVE_STATES_W)
+GROUP BY ALL
+UNION ALL
+SELECT 'MONTHLY' AS GRANULARITY, BUSINESS_DOMAIN_ID, MKT_CHANNEL, MKT_SOURCE, COUPON_NAME, PERIOD,
+    COUNT(DISTINCT CASE WHEN IS_ACTIVE = 1 THEN PLAYER_UNIFIED_CODE END) AS ACTIVE_PLAYERS,
+    COUNT(DISTINCT CASE WHEN IS_NEW = 1 THEN PLAYER_UNIFIED_CODE END) AS NEW_PLAYERS,
+    COUNT(DISTINCT CASE WHEN IS_RETAINED = 1 THEN PLAYER_UNIFIED_CODE END) AS RETAINED_PLAYERS,
+    COUNT(DISTINCT CASE WHEN IS_REACTIVATED = 1 THEN PLAYER_UNIFIED_CODE END) AS REACTIVATED_PLAYERS,
+    COUNT(DISTINCT CASE WHEN IS_INACTIVE = 1 THEN PLAYER_UNIFIED_CODE END) AS INACTIVE_PLAYERS
+FROM (SELECT * FROM CTE_ACTIVE_STATES_M UNION ALL SELECT * FROM CTE_INACTIVE_STATES_M)
+GROUP BY ALL
+{% endmacro %}

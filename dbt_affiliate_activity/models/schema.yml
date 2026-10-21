@@ -1,0 +1,88 @@
+version: 2
+
+models:
+  - name: stg_unified_dates
+    description: >
+      One row per player account with the earliest registration and FTD across accounts sharing a
+      PLAYER_UNIFIED_CODE. Online, valid, non-test accounts of the domains in var dev_domain_ids.
+    columns:
+      - name: player_id
+        tests: [not_null]
+      - name: player_unified_code
+        tests: [not_null]
+
+  - name: int_players
+    description: One row per PLAYER_UNIFIED_CODE with the registering PLAYER_ID and local REG / FTD timestamps.
+    columns:
+      - name: player_unified_code
+        tests:
+          - not_null
+          - unique
+
+  - name: int_player_base
+    description: >
+      Affiliate players registered or FTD'd in the last 25 months, with marketing channel, source and coupon.
+      One row per PLAYER_UNIFIED_CODE. D_REGISTRATION_REPORTING_DAILY is expected to hold one row per PLAYER_ID,
+      and int_players already collapses the several PLAYER_IDs of a BE unified player into one, so no fan-out.
+    columns:
+      - name: player_unified_code
+        tests:
+          - not_null
+          - unique
+
+  - name: int_player_states_weekly
+    description: Weekly active / new / retained / reactivated / inactive flags per player and week. Built with the player_activity_states macro.
+    columns:
+      - name: player_unified_code
+        tests: [not_null]
+      - name: period
+        tests: [not_null]
+
+  - name: int_player_states_monthly
+    description: Monthly flags per player and month, all domains. Built with the player_activity_states macro.
+    columns:
+      - name: player_unified_code
+        tests: [not_null]
+      - name: period
+        tests: [not_null]
+
+  - name: dbt_affiliate_player_activity
+    description: >
+      Affiliate player activity per granularity (weekly / monthly), business domain, marketing channel, source,
+      coupon and period. Active players split into new, retained and reactivated; inactive players are those
+      active in the previous period but not in this one. Players are counted by PLAYER_UNIFIED_CODE.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - granularity
+              - business_domain_id
+              - mkt_channel
+              - mkt_source
+              - coupon_name
+              - period
+    columns:
+      - name: granularity
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['WEEKLY', 'MONTHLY']
+      - name: business_domain_id
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 8, 10, 14, 15, 16]
+      - name: period
+        tests: [not_null]
+      - name: active_players
+        description: Distinct players with at least one bet in the period.
+      - name: new_players
+        description: Active players whose first ever active period (within the 25 month window) is this one.
+      - name: retained_players
+        description: Active players who were also active in the previous period.
+      - name: reactivated_players
+        description: Active players not active in the previous period, but active in an earlier one.
+      - name: inactive_players
+        description: Players active in the previous period and not active in this one.

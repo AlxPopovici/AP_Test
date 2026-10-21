@@ -1,0 +1,41 @@
+version: 2
+
+sources:
+  - name: dwh
+    database: PROD
+    schema: DWH
+    tables:
+      - name: d_player
+        description: Player dimension. Registration and FTD timestamps (UTC), domain, test account flag.
+      - name: d_business_market
+        description: Market dimension, used for the UTC to local timezone conversion.
+      - name: d_business_domain
+        description: Business domain dimension (id to name).
+
+  - name: dm_martech
+    database: PROD
+    schema: DM_MARTECH
+    tables:
+      - name: d_registration_reporting_daily
+        description: Registration reporting with acquisition channel, marketing source and coupon per player. One row per PLAYER_ID.
+        columns:
+          - name: player_id
+            tests:
+              # Warn only: documents the assumption without blocking the build if it ever breaks.
+              - unique:
+                  config:
+                    severity: warn
+
+  - name: bi
+    database: PROD
+    schema: BI
+    tables:
+      - name: d_coupon_reporting
+        description: Coupon to channel/source mapping, kept in line with the PL marketing team preferences.
+
+  - name: dm_player
+    database: PROD
+    schema: DM_PLAYER
+    tables:
+      - name: f_player_product_performance_daily
+        description: Daily player performance per product. Very large (tens of billions of rows), always filter by date.

@@ -1,0 +1,21 @@
+# No secrets here. Account, user, role and warehouse come from env vars.
+# Auth is SSO (browser pop-up on first connection).
+#   export SNOWFLAKE_ACCOUNT=...
+#   export SNOWFLAKE_USER=alexandru.popovici@super.xyz
+#   export SNOWFLAKE_ROLE=...
+#   export SNOWFLAKE_WAREHOUSE=...
+# Run dbt with: dbt <cmd> --profiles-dir .
+affiliate_activity:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      authenticator: externalbrowser
+      role: "{{ env_var('SNOWFLAKE_ROLE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      database: PROD
+      schema: SBX_BI
+      threads: 4
+      client_session_keep_alive: false
