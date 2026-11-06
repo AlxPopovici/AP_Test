@@ -33,9 +33,13 @@ dbt build --profiles-dir .
 
 ## Source note
 
-`PROD.DM_MARTECH.VW_PLAYER_REG_ATTRIBUTION` (used by the original SQL) is not visible to role `FR__DI`, so the
-staging model reads `VW_F_PLAYER_REG_ATTRIBUTION` (Attribution V2 pipeline, same contract). Totals can differ
-from the existing view.
+`PROD.DM_MARTECH.VW_PLAYER_REG_ATTRIBUTION` (used by the original SQL) was not visible to role `FR__DI` —
+and per the 2026-10-12 investigation, it no longer exists at all. `VW_F_PLAYER_REG_ATTRIBUTION` is also
+broken (orphaned, stale 29-column definition vs. the table's 32). The staging model now reads
+`PROD.DM_MARTECH.F_PLAYER_REG_ATTRIBUTION` directly — the fact table both views used to wrap, with 3 extra
+AppsFlyer-install columns (`ATTRIBUTED_TOUCH_TYPE`, `AF_EVENT_DT`, `AF_EVENT_DATE`) neither view ever picked
+up and this model still doesn't select. Totals can differ from the existing `TMP_VW_ASDK_AGG_ATTRIBUTION_DATA_V2`
+for that reason, independent of the test-account filter bug noted below.
 
 ## Known quirk carried over from the source SQL
 

@@ -5,10 +5,13 @@ sources:
     database: PROD
     schema: DM_MARTECH
     tables:
-      - name: vw_f_player_reg_attribution
+      - name: f_player_reg_attribution
         description: >
-          Player-level attribution (Attribution V2 pipeline, layer 6 reporting view). Same contract as the
-          legacy vw_player_reg_attribution, which FR__DI cannot see. One row per player_id.
+          Player-level attribution (Attribution V2 pipeline). The underlying fact table — both
+          vw_f_player_reg_attribution (orphaned, stale 29-col definition) and the legacy vw_player_reg_attribution
+          (no longer exists) are broken as of 2026-10-12; this table is what both used to wrap. Has 3 extra
+          AppsFlyer-install columns (attributed_touch_type, af_event_dt, af_event_date) the old views never
+          picked up. One row per player_id.
 
   - name: dwh
     database: PROD
